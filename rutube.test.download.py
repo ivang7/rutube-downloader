@@ -19,7 +19,7 @@ def videoDownload(params):
     print "{} - FINISH download video".format(indexOfVideo)
 
 
-VIDEO_URL = 'https://rutube.ru/video/aee309e94721a8dd72950e2609ddc87c/'
+VIDEO_URL = 'https://rutube.ru/video/8f35c1838c6eb8ad2068d9d6aae0a47e/'
 
 ######## get HTML with video, find id
 video =  requests.get(VIDEO_URL)
@@ -59,24 +59,22 @@ playListWithHighQualityVideo = zz[0][1]
 #### get playlist with all video
 m3u8_obj = m3u8.load(playListWithHighQualityVideo)
 baseUrlForVideo =  m3u8_obj.base_uri
-urls = m3u8_obj.files
+
 
 segmentDuration =  m3u8_obj.target_duration
-
-#urls = [baseUrlForVideo + seg.uri for seg in m3u8_obj.segments]
+urls = [baseUrlForVideo + url for url  in m3u8_obj.files]
 #videoDownload(urls[0], 0)
 #exit()
 
 advertMetaData = requests.get("https://rutube.ru/api/play/trackinfo/{}/?format=json&extended_cuepoints=true".format(videoId))
 if advertMetaData.status_code == 200 :
     advertMetaDataJson = json.loads(advertMetaData.content)
-    #print "xx\n\n\n"
-    #print advertMetaDataJson['cuepoints']
     chapters = [{'advert':chapter['forbid_seek'], 'time':chapter['time']} for chapter in advertMetaDataJson['cuepoints']]
     print ('Get advert = {}'.format(chapters))
 else :
     print ('Error, cant get advert meta data, HTTP_CODE = {}'.format(advertMetaData.status_code))
 
+chapters = sorted(chapters,key=lambda chapter: chapter['time'])
 i = 0
 advert = False
 while i < len (chapters) :
@@ -88,8 +86,41 @@ while i < len (chapters) :
         i += 1
 print ('Get advert = {}'.format(chapters))
 
+import pprint
+pprint.pprint(chapters)
 
-exit()
+####### create arg for join wo advert
+startTimePreviousChapter = 0.0
+previousVideoIndex = 0
+ffmpegAction = []
+for chapter in chapters:
+    startTimeCurrentChapter = chapter['time']
+
+    timeForThisVideo = startTimeCurrentChapter % segmentDuration
+    currentVideoIndex = int(startTimeCurrentChapter // segmentDuration)
+
+    if chapter['advert']:
+        saveVideoBeforeAdvert = ['./download/video{}.mp4'.format(currentVideoIndex), '-t', str(timeForThisVideo)]
+        ffmpegAction.append(saveVideoBeforeAdvert)
+        if startTimePreviousChapter > 0:
+            videosWithoutAdvert ="|".join(['./download/video{}.mp4'.format(i) for i in range(previousVideoIndex, currentVideoIndex)])
+            ffmpegAction.append('concat:{}'.format(videosWithoutAdvert))
+    else:
+        saveVideoAfterAdvert = ['./download/video{}.mp4'.format(currentVideoIndex), '-ss', str(timeForThisVideo)]
+        ffmpegAction.append(saveVideoAfterAdvert)
+    startTimePreviousChapter = startTimeCurrentChapter
+    previousVideoIndex = int(currentVideoIndex if timeForThisVideo == 0 else currentVideoIndex + 1)
+
+
+#previousVideoIndex = int(currentVideoIndex if timeForThisVideo == 0 else currentVideoIndex + 1)
+if previousVideoIndex < len(urls):
+    videosAfterLastAdvert ="|".join(['./download/video{}.mp4'.format(i) for i in range(previousVideoIndex, len(urls))])
+    ffmpegAction.append('concat:{}'.format(videosAfterLastAdvert))
+
+pprint.pprint(ffmpegAction)
+
+
+#exit()
 
 
 #http://toly.github.io/blog/2014/02/13/parallelism-in-one-line/
@@ -108,11 +139,50 @@ if 1 == 0 :
     print results
 
 
-videoClipsArray = ['./download/video{}.mp4'.format(i) for i in range(len(u))]
-videoClipsArg = "|".join(videoClipsArray)
-#print videoClipsArg
 
+
+# videoClipsArray = ['./download/video{}.mp4'.format(i) for i in range(len(u))]
+# videoClipsArg = "|".join(videoClipsArray)
+# #print videoClipsArg
+ 
 import subprocess
-ffmpeg_command1 = ["C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe", "-i", 'concat:{}'.format(videoClipsArg), "-c", "copy", "./result_video.mp4"]
+# ffmpeg_command1 = ["C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe", "-i", 'concat:{}'.format(videoClipsArg), "-c", "copy", "./result_video.mp4", "-y"]
 
-subprocess.call(ffmpeg_command1)
+# subprocess.call(ffmpeg_command1)
+
+ffmpegCommands = [["C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe", "-i", ffmpegAction[i], "-c", "copy", "./download/part{}.ts".format(i), "-y"] for i in range(len(ffmpegAction))]
+
+#two dimension array to one dimensions, fix arguments
+for i in range(len(ffmpegCommands)):
+    newCommand = []
+    command = ffmpegCommands[i]
+
+    for arg in command:
+        if type(arg) is list:
+            for partArg in arg:
+                newCommand.append(partArg)
+        else:
+            newCommand.append(arg)
+    ffmpegCommands[i] = newCommand
+
+# for command in ffmpegCommands:
+#     subprocess.call(command)
+#print(ffmpegCommands[0])
+#subprocess.call(ffmpegCommands[0])
+
+pprint.pprint(ffmpegCommands)
+
+
+if 1 == 1 :
+    pool = ThreadPool()
+    results = pool.map(subprocess.call, ffmpegCommands)
+    pool.close()
+    pool.join()
+    print results
+
+#print ffmpegCommands
+
+videoPartsWithoutAdvert = "|".join(["./download/part{}.ts".format(i) for i in range(len(ffmpegCommands))])
+ffmpegJoinAllPart = ["C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe", "-i", 'concat:{}'.format(videoPartsWithoutAdvert), "-c", "copy", "./result_video.mp4", "-y"]
+
+subprocess.call(ffmpegJoinAllPart)
